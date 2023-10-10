@@ -1,21 +1,51 @@
-import { isEqual, objectIncludes, isString, random, getFromPath, put } from './helpers';
+import {
+  isEqual,
+  objectIncludes,
+  isString,
+  random,
+  getFromPath,
+  put,
+  getFromMap,
+  hasOwnProperty, Partial, isObject, DIRECTION,
+} from './helpers.js';
 
 class Collection extends Array {
   constructor(...array) {
     super(...array);
   }
 
+  at(path = '0') {
+    return getFromPath(this, path);
+  }
+
   chunk(size) {
-    const chunks = Collection.__create();
-    for (let i = 0; i < this.length; i+=size) {
+    const chunks = Collection.create();
+    for (let i = 0; i < this.length; i += size) {
       chunks.push(this.slice(i, size + i));
     }
 
     return chunks;
-  };
+  }
 
   split(splitter) {
-    return this.map(item => Collection.from(item.split(splitter)));
+    return this.map((item) => Collection.from(item.split(splitter)));
+  }
+
+  deepReplace(searchValue, replaceValue, createPath = (index) => index.toString()) {
+    let createPathCopy = createPath;
+    if (Array.isArray(createPath())) {
+      createPathCopy = index => createPath(index).join('.');
+    }
+
+    for (let i = 0; i < this.length; i++) {
+      const path = createPathCopy(i);
+
+      if (isEqual(getFromPath(this, path), searchValue)) {
+        put(path, replaceValue, this);
+      }
+    }
+
+    return this;
   }
 
   replace(searchValue, replaceValue, replaceAll = false) {
@@ -27,15 +57,16 @@ class Collection extends Array {
         if (!replaceAll) break;
       }
 
-      i++;
+      i += 1;
     }
 
     return this;
   }
 
   replaceByIndex(start, elements, deleteCount = 1) {
-    if (start = 'last') start = this.length - 1;
+    if (start < 0) start = this.length + start;
     if (!Array.isArray(elements)) elements = Array(deleteCount).fill(elements);
+
     this.splice(start, deleteCount, ...elements);
 
     return this;
@@ -45,9 +76,9 @@ class Collection extends Array {
     return getFromPath(this, index);
   }
 
-  getEach(index = 0) {
-    return this.map(item => {
-      return getFromPath(item, index);
+  getEach(path = '0') {
+    return this.map((item) => {
+      return getFromPath(item, path);
     });
   }
 
@@ -59,8 +90,17 @@ class Collection extends Array {
     return Collection.from(this);
   }
 
-  remove(index, deleteCount = 1) {
-    return this.splice(index, deleteCount);
+  remove(value, deleteCount = 1) {
+    const removeAll = deleteCount < 0;
+    while (deleteCount-- > 0 || removeAll) {
+      const index = this.deepIndexOf(value);
+
+      if (index === -1) return this;
+
+      this.splice(index, 1);
+    }
+
+    return this;
   }
 
   first() {
@@ -71,103 +111,173 @@ class Collection extends Array {
     return this[this.lastIndex()];
   }
 
-  static __create(...params) {
+  static create(...params) {
     return new Collection(...params);
   }
 
-  isEmpty(each = false) {
-    if (each) return this.compact(true).isEmpty();
-    else return this.length === 0;
+  isEmpty(deep = false) {
+    return deep ? isEqual(this, []) : this.length === 0;
   }
 
   compact(excludeZero = false) {
-    return this.filter(item => item === 0 && excludeZero ? true : Boolean(item));
+    return this.filter((item) =>
+      item === 0 && excludeZero ? true : Boolean(item)
+    );
   }
 
-  _concat(...values) {
-    values.forEach(value => {
-      Array.isArray(value) ? this.push(...value) : this.push(value)
+  concat(...values) {
+    values.forEach((value) => {
+      Array.isArray(value) ? this.push(...value) : this.push(value);
     });
     return this;
   }
 
   difference(arr) {
     return this.filter(item => {
-      return arr.every(el => !isEqual(item[property], el[property]));
+      return arr.every(el => !isEqual(el, item));
     });
   }
 
   differenceBy(arr, property) {
-    return this.filter(item => {
-      return arr.every(el => item[property] !== el[property]);
-    })
+    return this.filter((item) => {
+      return arr.every((el) => !isEqual(this.iteratee(property, item), this.iteratee(property, el)));
+    });
   }
 
-  dropWhile(iteratee) {
-    const newArr = Collection.__create();
-    for (let i = 0; i < this.length; i++) {
-      const result = this.__iteratee(iteratee, this[i], i, this);
+  differenceWith(arr, comparator) {
+    return this.filter(item => {
+      return arr.every(el => !comparator(item, el));
+    });
+  }
 
-      if (!result) return newArr;
+  #drop(direction, dropCount) {
+    if (dropCount >= this.length) {
+      return Collection.create();
+    }
 
-      newArr.push(this[i]);
+    const start = direction === DIRECTION.LEFT ? dropCount : 0;
+    const end = direction === DIRECTION.LEFT ? undefined : this.length - dropCount;
+    return this.slice(start, end);
+  }
+
+  drop(dropCount = 1) {
+    return this.#drop(DIRECTION.LEFT, dropCount)
+  }
+
+  dropRight(dropCount = 1) {
+    return this.#drop(DIRECTION.RIGHT, dropCount)
+  }
+
+  #dropWhile(direction, iteratee) {
+    const newArr = Collection.create();
+    let currentIndex = direction === DIRECTION.LEFT ? 0 : this.length - 1;
+    const getRealPosition = (currentIndex) => direction === DIRECTION.RIGHT ? this.length - currentIndex : currentIndex;
+    const condition = direction === DIRECTION.LEFT ? (index) => index < this.length : (index) =>  index >= 0
+    const add = direction === DIRECTION.LEFT ? this.push.bind(newArr) : this.unshift.bind(newArr);
+
+    for (; condition(currentIndex); currentIndex += direction) {
+      const result = this.iteratee(iteratee, this[currentIndex], currentIndex, this);
+      if (result) continue;
+
+      add(this[currentIndex]);
     }
 
     return newArr;
   }
 
-  _includes(value) {
-    return this.some(item => isEqual(value, item));
+  dropWhile(iteratee) {
+    return this.#dropWhile(DIRECTION.LEFT, iteratee);
   }
 
-  _includesBy(param, value) {
-    return this.some(item => isEqual(item[param], value));
+  dropWhileRight(iteratee) {
+    return this.#dropWhile(DIRECTION.RIGHT, iteratee);
   }
 
-  __reduceDuplicates(prefix = '') {
-    const includes = prefix + 'includes';
-    const indexOf = prefix + 'indexOf';
-    const lastIndexOf = prefix + 'lastIndexOf';
+  deepIncludes(value) {
+    return this.some((item) => isEqual(value, item));
+  }
+
+  includesBy(iteratee, value) {
+    return this.some((item) => isEqual(this.iteratee(iteratee, item), value));
+  }
+
+  getDuplicate(deep = false, uniq) {
+    const includes = deep ? this.deepIncludes : this.includes;
+
     return (prev, curr) => {
-      console.log(this[indexOf](curr), this[lastIndexOf](curr))
-      if (!prev[includes](curr)) {
-        if (this[indexOf](curr) !== this[lastIndexOf](curr)) {
-          prev.push(curr);
-        }
+      if (uniq && includes.call(prev, curr)) return prev;
+
+      if (this.isDuplicate(curr, deep)) {
+        prev.push(curr);
       }
 
       return prev;
+    };
+  }
+
+  getOnlyUniqValue(deep) {
+    return (prev, curr) => {
+      if (!this.isDuplicate(curr, deep)) {
+        prev.push(curr);
+      }
+
+      return prev;
+    };
+  }
+
+  isDuplicate(value, deep = false) {
+    const indexOf = deep ? this.deepIndexOf : this.indexOf;
+    const lastIndexOf = deep ? this.deepLastIndexOf : this.lastIndexOf;
+
+    const index = indexOf.call(this, value);
+    const lastIndex = lastIndexOf.call(this, value);
+
+    return index !== lastIndex;
+  }
+
+  withoutDuplicates(deep = false) {
+    return this.reduce(this.getOnlyUniqValue(deep), Collection.create());
+  }
+
+  duplicates(uniq = true) {
+    return this.reduce(this.getDuplicate(false, uniq), Collection.create());
+  }
+
+  deepDuplicates(uniq = true) {
+    return this.reduce(this.getDuplicate(true, uniq), Collection.create());
+  }
+
+  deepIndexOf(value, fromIndex = 0) {
+    if (fromIndex < 0) {
+      fromIndex = 0;
     }
-  }
+    fromIndex = fromIndex - 1;
 
-  duplicates() {
-    const reducer = this.__reduceDuplicates();
-    return this.reduce(reducer, Collection.__create());
-  }
-
-  deepDuplicates() {
-    return this.reduce(this.__reduceDuplicates('_'), Collection.__create());
-  }
-
-  _indexOf(value, fromIndex = 0) {
-    const slice = this.slice(fromIndex);
-
-    return slice.findIndex(item => isEqual(item, value)) + fromIndex;
-  }
-
-  _lastIndexOf(value, fromIndex = this.length - 1) {
-    while (fromIndex > -1) {
+    while (++fromIndex < this.length) {
       if (isEqual(this[fromIndex], value)) {
         return fromIndex;
       }
-
-      fromIndex--;
     }
 
     return -1;
   }
 
-  empty() {
+  deepLastIndexOf(value, fromIndex = 1) {
+    if (Number.isNaN(fromIndex) || fromIndex >= this.length) {
+      fromIndex = 1;
+    }
+
+    fromIndex = this.length - Math.abs(fromIndex);
+    while (fromIndex-- > -1) {
+      if (isEqual(this[fromIndex], value)) {
+        return fromIndex;
+      }
+    }
+
+    return -1;
+  }
+
+  clear() {
     return this.splice(0);
   }
 
@@ -176,20 +286,20 @@ class Collection extends Array {
   }
 
   fromEntries() {
-    this.reduce((prev, [key, value]) => {
-      return {...prev, [key]: value};
+    return this.reduce((prev, [key, value]) => {
+      return { ...prev, [key]: value };
     }, {});
   }
 
   eachAsEntries() {
-    return this.map(item => Object.entries(item));
+    return this.map((item) => Collection.from(Object.entries(item))).flat(1);
   }
 
   uniq() {
     return this.reduce((prev, curr) => {
-      if (!prev._includes(curr)) prev.push(curr);
+      if (!prev.deepIncludes(curr)) prev.push(curr);
       return prev;
-    }, Collection.__create());
+    }, Collection.create());
   }
 
   uniqBy(prop) {
@@ -199,52 +309,46 @@ class Collection extends Array {
     }, []);
   }
 
-  count(value) {
-    return this.reduce((prev, curr) => isEqual(value, curr) ? ++prev : prev, 0);
+  count(iteratee) {
+    return this.reduce((prev, curr) => (this.iteratee(iteratee, curr) ? ++prev : prev), 0);
   }
 
-  countBy(value, prop) {
-    return this.reduce((prev, curr) => isEqual(value, curr[prop]) ? ++prev : prev, 0);
-  }
+  countBy(iteratee) {
+    return this.reduce((prev, curr) => {
+      const key = this.iteratee(iteratee, curr);
 
-  countAll(key = undefined) {
-    const result = this.reduce((prev, curr) => {
-      const exists = [...prev.keys()].find(item => isEqual(curr, item));
-      let currCount = prev.get(exists);
-
-      if (exists) prev.set(exists, ++currCount);
-      else prev.set(curr, 1);
+      if (typeof prev[key] === 'number') {
+        prev[key] += 1;
+      } else {
+        prev[key] = 1;
+      }
 
       return prev;
-    }, new Map());
-
-    if (key) return this.getFromMap(result, key);
-
-    return result;
+    }, {});
   }
 
   invokeMap(fn, ...args) {
-    return this.map(item => {
+    return this.map((item) => {
       if (typeof fn === 'string') {
         return item[fn](...args);
       }
 
-      return fn.call(item, ...args)
-    })
+      return fn.call(item, ...args);
+    });
   }
 
   keyBy(iteratee) {
     return this.reduce((prev, curr) => {
-      const key = this.__iteratee(iteratee, curr);
-      return {...prev, [key]: curr}
-    }, {})
+      const key = this.iteratee(iteratee, curr);
+      return { ...prev, [key]: curr };
+    }, {});
   }
 
   groupBy(iteratee) {
     return this.reduce((prev, curr) => {
-      const key = this.__iteratee(iteratee, curr);
+      const key = this.iteratee(iteratee, curr);
       if (prev[key]) prev[key].push(curr);
-      else prev[JSON.stringify(key)] = [curr];
+      else prev[key] = [curr];
 
       return prev;
     }, {});
@@ -253,83 +357,95 @@ class Collection extends Array {
   sortBy(props, orders = 'asc') {
     props = !Array.isArray(props) ? [props] : props;
     return this.sort((a, b) => {
-      return props.map((prop, index) => {
-        const order = !Array.isArray(orders) ? orders : (
-          orders[index] || orders[orders.length - 1]
-        );
-        const firstValue = a[prop];
-        const secondValue = b[prop];
-        const areString = isString(firstValue) && isString(secondValue);
+      return props
+        .map((prop, index) => {
+          const order = !Array.isArray(orders)
+            ? orders
+            : orders[index] || orders[orders.length - 1];
+          const firstValue = this.iteratee(prop, a);
+          const secondValue = this.iteratee(prop, b);
+          const isEachString = isString(firstValue) && isString(secondValue);
 
-        if (areString) {
-          if (order === 'asc') {
-            return firstValue.localeCompare(secondValue);
+          if (isEachString) {
+            if (order === 'asc') {
+              return firstValue.localeCompare(secondValue);
+            }
+
+            return secondValue.localeCompare(firstValue);
           }
 
-          return secondValue.localeCompare(firstValue);
-        }
-
-        return order === 'asc' ? firstValue - secondValue : secondValue - firstValue;
-      })
-      .reduce((prev, curr) => prev || curr, 0)
+          return order === 'asc'
+            ? firstValue - secondValue
+            : secondValue - firstValue;
+        })
+        .reduce((prev, curr) => prev || curr, 0);
     });
   }
 
-  __iteratee(param, value, ...args) {
+  iteratee(param, value, ...args) {
     if (Array.isArray(param)) {
-      param = {[param[0]]: param[1]};
+      param = { [param[0]]: param[1] };
     }
 
-    const types = {
-      'function': () => param(value, ...args),
-      'string': () => getFromPath(value, param),
-      'object': () => Object.entries(param).every(([key, paramValue]) => isEqual(value[key], paramValue)),
-    }
+    switch (typeof param) {
+      case "function": {
+        return param(value, ...args);
+      }
+      case "string": {
+        const result = getFromPath(value, param);
 
-    const type = typeof param;
-    return types[type]();
+        if (typeof result === 'undefined') {
+          return hasOwnProperty(value, param);
+        }
+
+        return result;
+      }
+      case "object": {
+        return isEqual(Collection.partial(param), value);
+      }
+    }
   }
 
   partition(match) {
-    return this.reduce((prev, curr) => {
-      if (this.__iteratee(match, curr)) prev[0].push(curr);
-      else prev[1].push(curr);
+    return this.reduce(
+      (prev, curr) => {
+        if (this.iteratee(match, curr)) prev[0].push(curr);
+        else prev[1].push(curr);
 
-      return prev;
-    }, [[], []])
-  }
-
-  fillKeys(fill, prop = undefined) {
-    return this.reduce((prev, curr) => {
-      const value = this.__iteratee(fill, curr);
-      const key = this.__iteratee(prop, curr);
-
-      prev[key] = value;
-      return prev;
-    }, {})
+        return prev;
+      },
+      Collection.from([[], []])
+    );
   }
 
   reject(iteratee) {
-    return this.filter(item => !this.__iteratee(iteratee, item))
+    return this.filter((item) => !this.iteratee(iteratee, item));
   }
 
-  sample(size = 1) {
+  sample(size = 1, uniq = true) {
     const randElements = [];
-    while (size-- > 0) {
-      const randIndex = random(0, this.length - 1);
+    let mutableSize = size;
+
+    if (size > this.length) mutableSize = this.length;
+
+    while (mutableSize-- > 0) {
+      const randIndex = random(0, this.length - 1, true);
+
+      if (uniq && randElements.includes(this[randIndex])) {
+        mutableSize++;
+        continue;
+      }
 
       randElements.push(this[randIndex]);
     }
 
-    return size === 1 ? randElements[0] : randElements;
+    return size === 1 ? randElements[0] : Collection.from(randElements);
   }
 
   shuffle() {
     const arr = this.copy();
 
-    return this.map(
-      () => arr.splice(random(0, arr.length), 1)[0]
-    )
+    return this.map(() => arr.splice(random(0, arr.length), 1)[0]);
   }
 
   initial() {
@@ -341,32 +457,47 @@ class Collection extends Array {
   }
 
   intersection() {
-    return this[0].filter(el => this.every(i => i._includes(el))).flat(1).uniq();
+    return this[0].filter((el) => this.every((i) => i.deepIncludes(el))).uniq()
   }
 
-  intersectionBy(param) {
-    return this[0].filter((a) => {
-      return this.every(b => {
-        return b._includesBy(param, a[param]);
-      });
-    })
-    .flat(1)
-    .uniq();
+  intersectionBy(prop) {
+    return this[0]
+      .filter((a) => {
+        return this.every((b) => {
+          return b.includesBy(prop, getFromPath(a, prop));
+        });
+      })
+      .uniq();
   }
 
-  zip(iteratee = (...value) => value, passAsArray = false) {
+  _zip(result, callback, map) {
     let index = 0;
-    const result = Collection.__create();
-    while(index < this[0].length) {
-      let elements = this.map(item => item[index]);
-      if (passAsArray) elements = iteratee(elements);
-      else elements = iteratee(...elements);
-
-      result.push(elements)
+    while (index < this[0].length) {
+      callback(result, index, map);
       index++;
     }
 
     return result;
+  }
+
+  zip() {
+    const result = this._zip([], (result, index) => {
+      let elements = this.map((item) => item[index]);
+
+      result.push(elements);
+    });
+
+    return Collection.from(result);
+  }
+
+  zipWith(iteratee) {
+    const result = this._zip([], (result, index, iteratee) => {
+      let elements = this.map((item) => item[index]);
+
+      result.push(iteratee(...elements));
+    }, iteratee);
+
+    return Collection.from(result);
   }
 
   unzip() {
@@ -374,27 +505,20 @@ class Collection extends Array {
   }
 
   without(...values) {
-    return this.filter(item => !Collection.from(values)._includes(item));
+    values = Collection.from(values);
+    return this.filter((item) => !values.deepIncludes(item));
   }
 
   zipObject() {
-    let index = 0;
-    const result = {};
-    while(index < this[0].length) {
+    return this._zip({}, (result, index) => {
       result[this[0][index]] = this[1][index];
-      index++;
-    }
-
-    return result;
+    });
   }
 
   zipObjectDeep() {
-    const obj = {};
-    this[0].forEach((path, index) => {
-      put(path, this[1][index], obj);
+    return this._zip({}, (result, index) => {
+      put(this[0][index], this[1][index], result)
     });
-
-    return obj;
   }
 
   toString() {
@@ -405,18 +529,47 @@ class Collection extends Array {
     return JSON.stringify(this);
   }
 
-  static from(arr) {
-    return arr.reduce((prev, curr) => {
-      if (Array.isArray(curr)) {
-        prev.push(this.from(curr));
-      } else prev.push(curr);
+  static partial(value) {
+    return Partial.create(value);
+  }
 
-      return prev;
-    }, this.__create())
+  static #fromObject(object) {
+    object = { ...object };
+    Object.entries(object).forEach(([key, value]) => {
+      if (isObject(value)) {
+        object[key] = this.from(value);
+      }
+    });
+
+    return object;
+  }
+
+  static from(arr) {
+    if (Array.isArray(arr)) {
+      return arr.reduce((prev, curr) => {
+        if (isObject(curr)) {
+          prev.push(this.from(curr));
+        } else {
+          prev.push(curr);
+        }
+
+        return prev;
+      }, this.create());
+    }
+
+    if (isObject(arr)) {
+      return this.#fromObject(arr);
+    }
   }
 }
-function EasyArray(array) {
-  return Collection.from(array);
+
+function EasyArray(arrayLike, deep = true) {
+  let array = arrayLike;
+  if (!Array.isArray(arrayLike)) {
+    array = Array.from(arrayLike, arrayLike.map);
+  }
+
+  return deep ? Collection.from(array) : new Collection(...array);
 }
 
 export { EasyArray, Collection };

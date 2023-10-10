@@ -1,9 +1,40 @@
-function isObject(value) {
-  return typeof value === 'object' && value !== null;
+class Partial {
+  constructor(value) {
+    return new Proxy({ partial: this, value }, {
+      get: Partial.#getTrap,
+      ownKeys(target) {
+        return Object.keys(target.value);
+      },
+    });
+  }
+
+  static #getTrap(target, propertyKey, receiver) {
+    if (propertyKey === 'partial') return target.partial;
+
+    const result = target.value[propertyKey];
+    return typeof result === 'undefined' ? target[propertyKey] : result;
+  }
+
+  static create(value) {
+    return new Partial(value);
+  }
+
+  static isPartial(value) {
+    return value.partial instanceof Partial;
+  }
 }
 
-function isPrimitive(value) {
-  return Object(value) !== value;
+const DIRECTION = {
+  LEFT: 1,
+  RIGHT: -1,
+}
+
+function createPartial(value) {
+  return Partial.create(value);
+}
+
+function isObject(value) {
+  return typeof value === 'object' && value !== null;
 }
 
 function isNumeric(value) {
@@ -14,19 +45,31 @@ function isString(value) {
   return typeof value === 'string';
 }
 
+function isPrimitive(value) {
+  return Object(value) !== value;
+}
+
 function isEqual(obj, obj1) {
-  if (isPrimitive(obj) && isPrimitive(obj1)) return obj === obj1;
+  if (isPrimitive(obj)) return obj === obj1;
   if (obj === obj1) return true;
-  if (!obj || !obj1) return false;
+  if (typeof obj !== typeof obj1) return false;
+  if (obj.constructor !== obj1.constructor) return false;
 
-  const objKeys = Object.keys(obj);
-  const obj1Keys = Object.keys(obj1);
-  if (objKeys.length !== obj1Keys.length) return false;
-  if (!objKeys.every((key, index) => key === obj1Keys[index])) return false;
+  const [isObjPartial, isObj1Partial] = [Partial.isPartial(obj), Partial.isPartial(obj1)]
+  const isAnyPartial = isObjPartial || isObj1Partial;
 
-  if (obj.isPrototypeOf(obj1) || obj1.isPrototypeOf(obj)) return false;
+  const objKeys = Reflect.ownKeys(obj);
+  const obj1Keys = Reflect.ownKeys(obj1);
 
-  for (const prop in obj) {
+  if (!isAnyPartial) {
+    if (objKeys.length !== obj1Keys.length) return false;
+    if (!objKeys.every((key, index) => key === obj1Keys[index])) return false;
+  }
+
+  if (obj.prototype?.isPrototypeOf(obj1) || obj1.prototype?.isPrototypeOf(obj)) return false;
+
+  const keys = objKeys.length > obj1Keys.length ? obj1Keys : objKeys;
+  for (const prop of keys) {
     if (isObject(obj[prop]) && isObject(obj1[prop])) {
       if (!isEqual(obj[prop], obj1[prop])) return false;
     } else if (obj[prop] !== obj1[prop]) {
@@ -38,15 +81,31 @@ function isEqual(obj, obj1) {
 }
 
 function getFromPath(object, path) {
-  const keys = String(path).split('.');
-  const mainKey = keys.shift();
+  if (!path) return object;
 
-  let curr = object[mainKey];
+  const keys = String(path).split('.');
+
+  let curr = object;
+  if (!isObject(curr)) return curr;
+
   keys.forEach(key => {
+    if (isNumeric(key) && Number(key) < 0) {
+      key = curr.length + Number(key);
+    }
+
     curr = curr[key];
   });
 
   return curr;
+}
+
+function hasOwnProperty(obj, path) {
+  const keys = path.split('.');
+  const lastKey = keys.pop();
+
+  let curr = getFromPath(obj, keys.join('.'));
+
+  return curr.hasOwnProperty(lastKey);
 }
 
 function objectIncludes(arr, value, prop) {
@@ -101,4 +160,4 @@ function put(path, value, obj = {}) {
   return obj;
 }
 
-export { isEqual, objectIncludes, isNumeric, isString, isObject, random, getFromPath, getFromMap, put };
+export { isEqual, objectIncludes, isNumeric, isString, isObject, random, getFromPath, hasOwnProperty, getFromMap, put, Partial, createPartial, DIRECTION };
